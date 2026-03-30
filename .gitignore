@@ -1,0 +1,40 @@
+# ---- general ----
+.DS_Store
+.cache/
+tmp/
+*.log
+
+# ---- clangd / cmake ----
+**/build/
+**/cmake-build-*/
+**/compile_commands.json
+
+# ---- c/c++ ----
+*.o
+*.obj
+*.a
+*.so
+*.out
+
+# ---- qt ----
+*.pro.user
+*.user
+
+# ---- flutter / dart ----
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/build/
+**/.metadata
+
+# ---- android ----
+**/android/.gradle/
+**/android/local.properties
+**/*.keystore
+**/*.jks
+
+# ---- ios ----
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/ephemeral/
