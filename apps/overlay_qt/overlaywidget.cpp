@@ -9,7 +9,11 @@ OverlayWidget::OverlayWidget(QWidget *parent)
     : QWidget(parent) {
     setWindowFlags(Qt::FramelessWindowHint |
                    Qt::WindowStaysOnTopHint |
-                   Qt::Tool);
+                   Qt::Tool |
+                   Qt::WindowTransparentForInput |
+                   Qt::WindowDoesNotAcceptFocus |
+                   Qt::NoDropShadowWindowHint |
+                   Qt::X11BypassWindowManagerHint);
 
     setAttribute(Qt::WA_TranslucentBackground);
     setAttribute(Qt::WA_TransparentForMouseEvents);
