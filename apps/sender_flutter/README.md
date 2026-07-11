@@ -1,6 +1,7 @@
-# motion_sender
+# Anti Carsick Sender
 
-A new Flutter project.
+Flutter sender for the Anti Carsick Windows overlay. See the repository root
+README for setup and usage instructions.
 
 ## Getting Started
 

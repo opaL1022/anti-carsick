@@ -8,6 +8,7 @@ tmp/
 **/build/
 **/cmake-build-*/
 **/compile_commands.json
+dist/
 
 # ---- c/c++ ----
 *.o

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'theme.dart';
 import 'motion_sender_page.dart';
+import 'theme.dart';
 
 void main() {
   runApp(const MyApp());
@@ -13,7 +13,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Motion Sender',
+      title: 'Anti Carsick Sender',
       theme: DaybreakTheme.theme,
       home: const MotionSenderPage(),
       debugShowCheckedModeBanner: false,
