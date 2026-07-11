@@ -1,9 +1,15 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:sensors_plus/sensors_plus.dart';
+
+import 'motion_packet.dart';
+import 'theme.dart';
+
+enum MotionSource { device, simulation }
 
 class MotionSenderPage extends StatefulWidget {
   const MotionSenderPage({super.key});
@@ -17,59 +23,143 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
   final _portController = TextEditingController(text: '9999');
 
   RawDatagramSocket? _socket;
-  Timer? _timer;
+  StreamSubscription<UserAccelerometerEvent>? _sensorSubscription;
+  Timer? _simulationTimer;
 
   bool _running = false;
+  bool _starting = false;
   double _ax = 0;
   double _ay = 0;
   double _az = 0;
-  double _t = 0;
+  double _simulationTime = 0;
+  int _packetsSent = 0;
+  String? _error;
+  late MotionSource _source;
 
-  Future<void> _startFakeSending() async {
+  bool get _deviceSensorsSupported {
+    if (kIsWeb) return true;
+    return Platform.isAndroid || Platform.isIOS;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _source = _deviceSensorsSupported
+        ? MotionSource.device
+        : MotionSource.simulation;
+  }
+
+  Future<void> _startSending() async {
     final host = _ipController.text.trim();
     final port = int.tryParse(_portController.text.trim());
 
-    if (port == null) return;
-
-    _socket ??= await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(milliseconds: 33), (_) {
-      _t += 0.1;
-
-      // 假資料：先模擬左右晃動與前後變化
-      _ax = sin(_t) * 1.5;
-      _ay = cos(_t * 0.7) * 0.8;
-      _az = 9.8;
-
-      final payload = jsonEncode({
-        't': DateTime.now().millisecondsSinceEpoch / 1000.0,
-        'ax': _ax,
-        'ay': _ay,
-        'az': _az,
-      });
-
-      _socket!.send(utf8.encode(payload), InternetAddress(host), port);
-
-      setState(() {});
-    });
+    if (host.isEmpty) {
+      setState(() => _error = '請輸入接收端 IP 或主機名稱。');
+      return;
+    }
+    if (port == null || port < 1 || port > 65535) {
+      setState(() => _error = 'Port 必須介於 1 到 65535。');
+      return;
+    }
 
     setState(() {
-      _running = true;
+      _starting = true;
+      _error = null;
+      _packetsSent = 0;
     });
+
+    try {
+      final addresses = await InternetAddress.lookup(host);
+      final target = addresses.firstWhere(
+        (address) => address.type == InternetAddressType.IPv4,
+        orElse: () => throw const SocketException('找不到 IPv4 位址'),
+      );
+      _socket ??= await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+
+      if (_source == MotionSource.device) {
+        _sensorSubscription = userAccelerometerEventStream(
+          samplingPeriod: const Duration(milliseconds: 33),
+        ).listen(
+          (event) => _send(target, port, event.x, event.y, event.z),
+          onError: (Object error) {
+            if (!mounted) return;
+            _stopSending();
+            setState(() => _error = '無法讀取動作感測器：$error');
+          },
+          cancelOnError: true,
+        );
+      } else {
+        _simulationTimer = Timer.periodic(
+          const Duration(milliseconds: 33),
+          (_) {
+            _simulationTime += 0.1;
+            _send(
+              target,
+              port,
+              sin(_simulationTime) * 1.5,
+              cos(_simulationTime * 0.7) * 0.8,
+              0,
+            );
+          },
+        );
+      }
+
+      if (mounted) {
+        setState(() {
+          _running = true;
+          _starting = false;
+        });
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _starting = false;
+        _error = '無法啟動傳送：$error';
+      });
+    }
+  }
+
+  void _send(InternetAddress target, int port, double x, double y, double z) {
+    final packet = MotionPacket(
+      timestamp: DateTime.now().millisecondsSinceEpoch / 1000,
+      ax: x,
+      ay: y,
+      az: z,
+    );
+
+    try {
+      _socket?.send(packet.encode(), target, port);
+      if (!mounted) return;
+      setState(() {
+        _ax = x;
+        _ay = y;
+        _az = z;
+        _packetsSent++;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      _stopSending();
+      setState(() => _error = '傳送失敗：$error');
+    }
   }
 
   void _stopSending() {
-    _timer?.cancel();
-    _timer = null;
-    setState(() {
-      _running = false;
-    });
+    _sensorSubscription?.cancel();
+    _sensorSubscription = null;
+    _simulationTimer?.cancel();
+    _simulationTimer = null;
+    if (mounted) {
+      setState(() {
+        _running = false;
+        _starting = false;
+      });
+    }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _sensorSubscription?.cancel();
+    _simulationTimer?.cancel();
     _socket?.close();
     _ipController.dispose();
     _portController.dispose();
@@ -79,52 +169,241 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Motion Sender')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+      appBar: AppBar(
+        title: const Text('ANTI CARSICK'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: _StatusPill(running: _running),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(20),
           children: [
-            TextField(
-              controller: _ipController,
-              decoration: const InputDecoration(
-                labelText: 'Target IP',
-                border: OutlineInputBorder(),
-              ),
+            Text(
+              '讓視覺跟上移動',
+              style: Theme.of(context).textTheme.headlineMedium,
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _portController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Target Port',
-                border: OutlineInputBorder(),
+            const SizedBox(height: 8),
+            Text(
+              '將手機動作資料送到 Windows overlay，在螢幕邊緣顯示移動提示。手機與電腦需位於同一網路。',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: DaybreakTheme.muted,
+                height: 1.5,
               ),
-            ),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _running ? null : _startFakeSending,
-                    child: const Text('Start Fake Sender'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _running ? _stopSending : null,
-                    child: const Text('Stop'),
-                  ),
-                ),
-              ],
             ),
             const SizedBox(height: 24),
-            Text('ax: ${_ax.toStringAsFixed(3)}'),
-            Text('ay: ${_ay.toStringAsFixed(3)}'),
-            Text('az: ${_az.toStringAsFixed(3)}'),
+            Card(
+              margin: EdgeInsets.zero,
+              child: Padding(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('連線設定', style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: TextField(
+                            controller: _ipController,
+                            enabled: !_running && !_starting,
+                            decoration: const InputDecoration(
+                              labelText: 'Windows IP',
+                              hintText: '192.168.1.10',
+                              prefixIcon: Icon(Icons.computer_rounded),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: TextField(
+                            controller: _portController,
+                            enabled: !_running && !_starting,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(labelText: 'Port'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    SegmentedButton<MotionSource>(
+                      segments: [
+                        ButtonSegment(
+                          value: MotionSource.device,
+                          enabled: _deviceSensorsSupported,
+                          icon: const Icon(Icons.sensors_rounded),
+                          label: const Text('手機感測器'),
+                        ),
+                        const ButtonSegment(
+                          value: MotionSource.simulation,
+                          icon: Icon(Icons.science_outlined),
+                          label: Text('模擬資料'),
+                        ),
+                      ],
+                      selected: {_source},
+                      onSelectionChanged: _running || _starting
+                          ? null
+                          : (selection) => setState(() => _source = selection.first),
+                    ),
+                    if (!_deviceSensorsSupported) ...[
+                      const SizedBox(height: 10),
+                      const Text(
+                        '此平台沒有動作感測器支援，請使用模擬資料；實際使用請在 Android 或 iPhone 執行。',
+                        style: TextStyle(color: DaybreakTheme.muted, fontSize: 12),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            _MotionReadout(ax: _ax, ay: _ay, az: _az, packets: _packetsSent),
+            if (_error != null) ...[
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: DaybreakTheme.red.withValues(alpha: 0.12),
+                  border: Border.all(color: DaybreakTheme.red.withValues(alpha: 0.5)),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline_rounded, color: DaybreakTheme.red),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(_error!)),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 20),
+            SizedBox(
+              height: 54,
+              child: ElevatedButton.icon(
+                onPressed: _starting
+                    ? null
+                    : _running
+                    ? _stopSending
+                    : _startSending,
+                icon: _starting
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(_running ? Icons.stop_rounded : Icons.play_arrow_rounded),
+                label: Text(
+                  _starting ? '正在連線…' : _running ? '停止傳送' : '開始傳送',
+                ),
+                style: _running
+                    ? ElevatedButton.styleFrom(
+                        backgroundColor: DaybreakTheme.red,
+                        foregroundColor: DaybreakTheme.brightWhite,
+                      )
+                    : null,
+              ),
+            ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.running});
+
+  final bool running;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = running ? DaybreakTheme.green : DaybreakTheme.muted;
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          border: Border.all(color: color.withValues(alpha: 0.5)),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 7),
+            Text(running ? '傳送中' : '待機', style: TextStyle(color: color, fontSize: 12)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MotionReadout extends StatelessWidget {
+  const _MotionReadout({
+    required this.ax,
+    required this.ay,
+    required this.az,
+    required this.packets,
+  });
+
+  final double ax;
+  final double ay;
+  final double az;
+  final int packets;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('即時動作', style: Theme.of(context).textTheme.titleMedium),
+                Text('$packets packets', style: const TextStyle(color: DaybreakTheme.muted, fontSize: 12)),
+              ],
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                Expanded(child: _AxisValue(axis: 'X', value: ax)),
+                Expanded(child: _AxisValue(axis: 'Y', value: ay)),
+                Expanded(child: _AxisValue(axis: 'Z', value: az)),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AxisValue extends StatelessWidget {
+  const _AxisValue({required this.axis, required this.value});
+
+  final String axis;
+  final double value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(axis, style: const TextStyle(color: DaybreakTheme.deepOrange, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        Text(value.toStringAsFixed(2), style: Theme.of(context).textTheme.titleLarge),
+        const Text('m/s²', style: TextStyle(color: DaybreakTheme.muted, fontSize: 11)),
+      ],
     );
   }
 }

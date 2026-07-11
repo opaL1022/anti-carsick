@@ -19,6 +19,7 @@ class DaybreakTheme {
   static const Color brightBlack = Color(0xFF333543);
   static const Color brightWhite = Color(0xFFFDF0ED);
   static const Color deepOrange = Color(0xFFFAB28E);
+  static const Color muted = Color(0xFF9DA2AA);
 
   static final ColorScheme colorScheme =
       const ColorScheme.dark(
