@@ -20,4 +20,5 @@ private:
     double az_ = 9.8;
 
     double filteredAx_ = 0.0;
+    double filteredAy_ = 0.0;
 };

@@ -30,6 +30,7 @@ void OverlayWidget::setMotion(double ax, double ay, double az) {
 
     constexpr double alpha = 0.12;
     filteredAx_ = alpha * ax_ + (1.0 - alpha) * filteredAx_;
+    filteredAy_ = alpha * ay_ + (1.0 - alpha) * filteredAy_;
 
     update();
 }
@@ -47,7 +48,8 @@ void OverlayWidget::paintEvent(QPaintEvent *event) {
 
     const double gain = 30.0;
     const double maxShift = 40.0;
-    const double shift = qBound(-maxShift, filteredAx_ * gain, maxShift);
+    const double xshift = qBound(-maxShift, filteredAx_ * gain, maxShift);
+    const double yshift = qBound(-maxShift, filteredAy_ * gain, maxShift);
 
     const double r = 7.0;
     const double d = r * 2.0;
@@ -55,8 +57,8 @@ void OverlayWidget::paintEvent(QPaintEvent *event) {
     const double ys[] = { h * 0.2, h * 0.4, h * 0.6, h * 0.8 };
 
     for (double y : ys) {
-        p.drawEllipse(QRectF(margin + shift, y, d, d));
-        p.drawEllipse(QRectF(w - margin - d + shift, y, d, d));
+        p.drawEllipse(QRectF(margin + xshift, y + yshift, d, d));
+        p.drawEllipse(QRectF(w - margin - d + xshift, y + yshift, d, d));
     }
 
     p.setPen(QColor(255, 255, 255, 200));
