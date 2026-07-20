@@ -1,7 +1,9 @@
 #pragma once
 
+#include <array>
 #include <QWidget>
 #include <QElapsedTimer>
+#include <QPointF>
 #include <QString>
 
 class OverlayWidget : public QWidget {
@@ -18,6 +20,15 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
+    struct DotState {
+        QPointF position;
+        QPointF velocity;
+        QPointF noise;
+        bool initialized = false;
+    };
+
+    void updateDotPhysics(const std::array<QPointF, 48> &targets);
+
     double ax_ = 0.0;
     double ay_ = 0.0;
     double az_ = 9.8;
@@ -27,4 +38,8 @@ private:
     bool listening_ = false;
     QString statusMessage_ = QStringLiteral("Starting…");
     QElapsedTimer lastPacket_;
+    QElapsedTimer animationClock_;
+    std::array<DotState, 48> dots_;
+    int physicsWidth_ = 0;
+    int physicsHeight_ = 0;
 };
