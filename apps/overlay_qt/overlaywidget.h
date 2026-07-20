@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QWidget>
+#include <QElapsedTimer>
+#include <QString>
 
 class OverlayWidget : public QWidget {
     Q_OBJECT
@@ -10,6 +12,7 @@ public:
 
 public slots:
     void setMotion(double ax, double ay, double az);
+    void setListeningState(bool listening, const QString &message);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -21,4 +24,7 @@ private:
 
     double filteredAx_ = 0.0;
     double filteredAy_ = 0.0;
+    bool listening_ = false;
+    QString statusMessage_ = QStringLiteral("Starting…");
+    QElapsedTimer lastPacket_;
 };

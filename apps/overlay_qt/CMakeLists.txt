@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.21)
 
 project(MotionOverlay LANGUAGES CXX)
 
@@ -22,3 +22,22 @@ target_link_libraries(MotionOverlay PRIVATE
     Qt6::Widgets
     Qt6::Network
 )
+
+set_target_properties(MotionOverlay PROPERTIES
+    WIN32_EXECUTABLE TRUE
+    MACOSX_BUNDLE TRUE
+)
+
+install(TARGETS MotionOverlay
+    BUNDLE DESTINATION .
+    RUNTIME DESTINATION bin
+)
+
+if(QT_VERSION VERSION_GREATER_EQUAL 6.5)
+    qt_generate_deploy_app_script(
+        TARGET MotionOverlay
+        OUTPUT_SCRIPT deploy_script
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+    install(SCRIPT ${deploy_script})
+endif()

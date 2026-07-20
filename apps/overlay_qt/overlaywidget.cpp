@@ -3,6 +3,7 @@
 #include <QPainter>
 #include <QGuiApplication>
 #include <QScreen>
+#include <QTimer>
 #include <QtMath>
 
 OverlayWidget::OverlayWidget(QWidget *parent)
@@ -17,10 +18,16 @@ OverlayWidget::OverlayWidget(QWidget *parent)
 
     setAttribute(Qt::WA_TranslucentBackground);
     setAttribute(Qt::WA_TransparentForMouseEvents);
+    setWindowTitle(QStringLiteral("Anti Carsick Overlay"));
 
     if (auto *screen = QGuiApplication::primaryScreen()) {
         setGeometry(screen->geometry());
     }
+
+    auto *refreshTimer = new QTimer(this);
+    refreshTimer->setInterval(250);
+    connect(refreshTimer, &QTimer::timeout, this, qOverload<>(&OverlayWidget::update));
+    refreshTimer->start();
 }
 
 void OverlayWidget::setMotion(double ax, double ay, double az) {
@@ -31,7 +38,14 @@ void OverlayWidget::setMotion(double ax, double ay, double az) {
     constexpr double alpha = 0.12;
     filteredAx_ = alpha * ax_ + (1.0 - alpha) * filteredAx_;
     filteredAy_ = alpha * ay_ + (1.0 - alpha) * filteredAy_;
+    lastPacket_.restart();
 
+    update();
+}
+
+void OverlayWidget::setListeningState(bool listening, const QString &message) {
+    listening_ = listening;
+    statusMessage_ = message;
     update();
 }
 
@@ -41,15 +55,16 @@ void OverlayWidget::paintEvent(QPaintEvent *event) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor(255, 255, 255, 180));
+    const bool receiving = listening_ && lastPacket_.isValid() && lastPacket_.elapsed() < 1500;
+    p.setBrush(receiving ? QColor(250, 178, 142, 205) : QColor(255, 255, 255, 85));
 
     const int w = width();
     const int h = height();
 
     const double gain = 30.0;
     const double maxShift = 40.0;
-    const double xshift = qBound(-maxShift, filteredAx_ * gain, maxShift);
-    const double yshift = qBound(-maxShift, filteredAy_ * gain, maxShift);
+    const double shiftX = qBound(-maxShift, filteredAx_ * gain, maxShift);
+    const double shiftY = qBound(-maxShift, -filteredAy_ * gain, maxShift);
 
     const double r = 7.0;
     const double d = r * 2.0;
@@ -57,10 +72,15 @@ void OverlayWidget::paintEvent(QPaintEvent *event) {
     const double ys[] = { h * 0.2, h * 0.4, h * 0.6, h * 0.8 };
 
     for (double y : ys) {
-        p.drawEllipse(QRectF(margin + xshift, y + yshift, d, d));
-        p.drawEllipse(QRectF(w - margin - d + xshift, y + yshift, d, d));
+        p.drawEllipse(QRectF(margin + shiftX, y + shiftY, d, d));
+        p.drawEllipse(QRectF(w - margin - d + shiftX, y + shiftY, d, d));
     }
 
-    p.setPen(QColor(255, 255, 255, 200));
-    p.drawText(30, 40, QString("ax=%1 ay=%2").arg(ax_, 0, 'f', 3).arg(ay_, 0, 'f', 3));
+    p.setPen(receiving ? QColor(250, 178, 142, 220) : QColor(255, 255, 255, 155));
+    const QString status = receiving
+        ? QStringLiteral("LIVE  ax %1  ay %2").arg(ax_, 0, 'f', 2).arg(ay_, 0, 'f', 2)
+        : listening_
+            ? QStringLiteral("WAITING FOR PHONE")
+            : statusMessage_.toUpper();
+    p.drawText(30, 40, status);
 }
