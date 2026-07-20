@@ -18,7 +18,8 @@ class MotionSenderPage extends StatefulWidget {
   State<MotionSenderPage> createState() => _MotionSenderPageState();
 }
 
-class _MotionSenderPageState extends State<MotionSenderPage> {
+class _MotionSenderPageState extends State<MotionSenderPage>
+    with WidgetsBindingObserver {
   final _ipController = TextEditingController(text: '127.0.0.1');
   final _portController = TextEditingController(text: '9999');
 
@@ -34,6 +35,7 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
   double _simulationTime = 0;
   int _packetsSent = 0;
   String? _error;
+  bool _pausedByBackground = false;
   late MotionSource _source;
 
   bool get _deviceSensorsSupported {
@@ -44,9 +46,20 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _source = _deviceSensorsSupported
         ? MotionSource.device
         : MotionSource.simulation;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if ((state == AppLifecycleState.paused ||
+            state == AppLifecycleState.detached) &&
+        (_running || _starting)) {
+      _pausedByBackground = true;
+      unawaited(_stopSending(message: 'iPhone 進入背景後會暫停動作傳送；回到 app 後請重新開始。'));
+    }
   }
 
   Future<void> _startSending() async {
@@ -69,45 +82,46 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
     });
 
     try {
+      await _stopSending(updateState: false);
       final addresses = await InternetAddress.lookup(host);
       final target = addresses.firstWhere(
         (address) => address.type == InternetAddressType.IPv4,
         orElse: () => throw const SocketException('找不到 IPv4 位址'),
       );
-      _socket ??= await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
 
       if (_source == MotionSource.device) {
-        _sensorSubscription = userAccelerometerEventStream(
-          samplingPeriod: const Duration(milliseconds: 33),
-        ).listen(
-          (event) => _send(target, port, event.x, event.y, event.z),
-          onError: (Object error) {
-            if (!mounted) return;
-            _stopSending();
-            setState(() => _error = '無法讀取動作感測器：$error');
-          },
-          cancelOnError: true,
-        );
-      } else {
-        _simulationTimer = Timer.periodic(
-          const Duration(milliseconds: 33),
-          (_) {
-            _simulationTime += 0.1;
-            _send(
-              target,
-              port,
-              sin(_simulationTime) * 1.5,
-              cos(_simulationTime * 0.7) * 0.8,
-              0,
+        _sensorSubscription =
+            userAccelerometerEventStream(
+              samplingPeriod: const Duration(milliseconds: 33),
+            ).listen(
+              (event) => _send(target, port, event.x, event.y, event.z),
+              onError: (Object error) {
+                if (!mounted) return;
+                unawaited(_stopSending(message: '無法讀取動作感測器：$error'));
+              },
+              cancelOnError: true,
             );
-          },
-        );
+      } else {
+        _simulationTimer = Timer.periodic(const Duration(milliseconds: 33), (
+          _,
+        ) {
+          _simulationTime += 0.1;
+          _send(
+            target,
+            port,
+            sin(_simulationTime) * 1.5,
+            cos(_simulationTime * 0.7) * 0.8,
+            0,
+          );
+        });
       }
 
       if (mounted) {
         setState(() {
           _running = true;
           _starting = false;
+          _pausedByBackground = false;
         });
       }
     } catch (error) {
@@ -128,7 +142,10 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
     );
 
     try {
-      _socket?.send(packet.encode(), target, port);
+      final sent = _socket?.send(packet.encode(), target, port) ?? 0;
+      if (sent <= 0) {
+        throw const SocketException('UDP socket 沒有送出資料');
+      }
       if (!mounted) return;
       setState(() {
         _ax = x;
@@ -138,27 +155,33 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
       });
     } catch (error) {
       if (!mounted) return;
-      _stopSending();
-      setState(() => _error = '傳送失敗：$error');
+      unawaited(_stopSending(message: '傳送失敗：$error'));
     }
   }
 
-  void _stopSending() {
-    _sensorSubscription?.cancel();
+  Future<void> _stopSending({bool updateState = true, String? message}) async {
+    final sensorSubscription = _sensorSubscription;
     _sensorSubscription = null;
+    await sensorSubscription?.cancel();
     _simulationTimer?.cancel();
     _simulationTimer = null;
-    if (mounted) {
+    _socket?.close();
+    _socket = null;
+    if (mounted && updateState) {
       setState(() {
         _running = false;
         _starting = false;
+        if (message != null) {
+          _error = message;
+        }
       });
     }
   }
 
   @override
   void dispose() {
-    _sensorSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_sensorSubscription?.cancel() ?? Future<void>.value());
     _simulationTimer?.cancel();
     _socket?.close();
     _ipController.dispose();
@@ -182,10 +205,7 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            Text(
-              '讓視覺跟上移動',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
+            Text('讓視覺跟上移動', style: Theme.of(context).textTheme.headlineMedium),
             const SizedBox(height: 8),
             Text(
               '將手機動作資料送到 Windows overlay，在螢幕邊緣顯示移動提示。手機與電腦需位於同一網路。',
@@ -202,7 +222,10 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('連線設定', style: Theme.of(context).textTheme.titleMedium),
+                    Text(
+                      '連線設定',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                     const SizedBox(height: 16),
                     Row(
                       children: [
@@ -224,7 +247,9 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
                             controller: _portController,
                             enabled: !_running && !_starting,
                             keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(labelText: 'Port'),
+                            decoration: const InputDecoration(
+                              labelText: 'Port',
+                            ),
                           ),
                         ),
                       ],
@@ -247,13 +272,17 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
                       selected: {_source},
                       onSelectionChanged: _running || _starting
                           ? null
-                          : (selection) => setState(() => _source = selection.first),
+                          : (selection) =>
+                                setState(() => _source = selection.first),
                     ),
                     if (!_deviceSensorsSupported) ...[
                       const SizedBox(height: 10),
                       const Text(
                         '此平台沒有動作感測器支援，請使用模擬資料；實際使用請在 Android 或 iPhone 執行。',
-                        style: TextStyle(color: DaybreakTheme.muted, fontSize: 12),
+                        style: TextStyle(
+                          color: DaybreakTheme.muted,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ],
@@ -262,18 +291,30 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
             ),
             const SizedBox(height: 16),
             _MotionReadout(ax: _ax, ay: _ay, az: _az, packets: _packetsSent),
+            if (_pausedByBackground) ...[
+              const SizedBox(height: 14),
+              const Text(
+                '為了節省電力，iPhone 會暫停背景 app 的動作串流。回到這個畫面後請重新開始傳送。',
+                style: TextStyle(color: DaybreakTheme.muted, fontSize: 12),
+              ),
+            ],
             if (_error != null) ...[
               const SizedBox(height: 14),
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
                   color: DaybreakTheme.red.withValues(alpha: 0.12),
-                  border: Border.all(color: DaybreakTheme.red.withValues(alpha: 0.5)),
+                  border: Border.all(
+                    color: DaybreakTheme.red.withValues(alpha: 0.5),
+                  ),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.error_outline_rounded, color: DaybreakTheme.red),
+                    const Icon(
+                      Icons.error_outline_rounded,
+                      color: DaybreakTheme.red,
+                    ),
                     const SizedBox(width: 10),
                     Expanded(child: Text(_error!)),
                   ],
@@ -287,16 +328,24 @@ class _MotionSenderPageState extends State<MotionSenderPage> {
                 onPressed: _starting
                     ? null
                     : _running
-                    ? _stopSending
+                    ? () => unawaited(_stopSending())
                     : _startSending,
                 icon: _starting
                     ? const SizedBox.square(
                         dimension: 18,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : Icon(_running ? Icons.stop_rounded : Icons.play_arrow_rounded),
+                    : Icon(
+                        _running
+                            ? Icons.stop_rounded
+                            : Icons.play_arrow_rounded,
+                      ),
                 label: Text(
-                  _starting ? '正在連線…' : _running ? '停止傳送' : '開始傳送',
+                  _starting
+                      ? '正在連線…'
+                      : _running
+                      ? '停止傳送'
+                      : '開始傳送',
                 ),
                 style: _running
                     ? ElevatedButton.styleFrom(
@@ -337,7 +386,10 @@ class _StatusPill extends StatelessWidget {
               decoration: BoxDecoration(color: color, shape: BoxShape.circle),
             ),
             const SizedBox(width: 7),
-            Text(running ? '傳送中' : '待機', style: TextStyle(color: color, fontSize: 12)),
+            Text(
+              running ? '傳送中' : '待機',
+              style: TextStyle(color: color, fontSize: 12),
+            ),
           ],
         ),
       ),
@@ -371,15 +423,27 @@ class _MotionReadout extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text('即時動作', style: Theme.of(context).textTheme.titleMedium),
-                Text('$packets packets', style: const TextStyle(color: DaybreakTheme.muted, fontSize: 12)),
+                Text(
+                  '$packets packets',
+                  style: const TextStyle(
+                    color: DaybreakTheme.muted,
+                    fontSize: 12,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 18),
             Row(
               children: [
-                Expanded(child: _AxisValue(axis: 'X', value: ax)),
-                Expanded(child: _AxisValue(axis: 'Y', value: ay)),
-                Expanded(child: _AxisValue(axis: 'Z', value: az)),
+                Expanded(
+                  child: _AxisValue(axis: 'X', value: ax),
+                ),
+                Expanded(
+                  child: _AxisValue(axis: 'Y', value: ay),
+                ),
+                Expanded(
+                  child: _AxisValue(axis: 'Z', value: az),
+                ),
               ],
             ),
           ],
@@ -399,10 +463,22 @@ class _AxisValue extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Text(axis, style: const TextStyle(color: DaybreakTheme.deepOrange, fontWeight: FontWeight.w700)),
+        Text(
+          axis,
+          style: const TextStyle(
+            color: DaybreakTheme.deepOrange,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
         const SizedBox(height: 4),
-        Text(value.toStringAsFixed(2), style: Theme.of(context).textTheme.titleLarge),
-        const Text('m/s²', style: TextStyle(color: DaybreakTheme.muted, fontSize: 11)),
+        Text(
+          value.toStringAsFixed(2),
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        const Text(
+          'm/s²',
+          style: TextStyle(color: DaybreakTheme.muted, fontSize: 11),
+        ),
       ],
     );
   }
