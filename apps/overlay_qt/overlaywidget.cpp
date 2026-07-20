@@ -52,7 +52,9 @@ void OverlayWidget::setListeningState(bool listening, const QString &message) {
     update();
 }
 
-void OverlayWidget::updateDotPhysics(const std::array<QPointF, 48> &targets) {
+void OverlayWidget::updateDotPhysics(
+    const std::array<QPointF, kDotCount> &targets,
+    const std::array<QPointF, kDotCount> &restTargets) {
     constexpr double anchorStiffness = 42.0;
     constexpr double springStiffness = 30.0;
     constexpr double damping = 10.5;
@@ -91,29 +93,38 @@ void OverlayWidget::updateDotPhysics(const std::array<QPointF, 48> &targets) {
         forces[index] -= dot.velocity * damping;
     }
 
-    // Each consecutive trio has two springs.  Their natural lengths are the
-    // visual gaps between the three resting dots. The cubic term means that
-    // stretching or compression becomes progressively harder, keeping dots
-    // from bunching together or spreading into separate clusters.
-    constexpr double naturalGaps[] = { 44.0, 42.0 };
-    for (int group = 0; group < 16; ++group) {
-        const int first = group * 3;
-        for (int pair = 0; pair < 2; ++pair) {
-            const int left = first + pair;
-            const int right = left + 1;
-            const QPointF delta = dots_[right].position - dots_[left].position;
-            const double distance = qSqrt(delta.x() * delta.x() + delta.y() * delta.y());
-            if (distance < 0.001) {
-                continue;
-            }
+    // Every edge is a 4 -> 3 -> 2 triangular mesh: a smaller dot belongs in
+    // the gap between the two larger dots before it. Its springs use the rest
+    // layout as their natural length. The cubic term makes excessive stretching
+    // and compression progressively harder.
+    const auto applySpring = [&](int first, int second) {
+        const QPointF delta = dots_[second].position - dots_[first].position;
+        const double distance = qSqrt(delta.x() * delta.x() + delta.y() * delta.y());
+        const QPointF restDelta = restTargets[second] - restTargets[first];
+        const double naturalLength = qSqrt(restDelta.x() * restDelta.x() +
+                                            restDelta.y() * restDelta.y());
+        if (distance < 0.001 || naturalLength < 0.001) {
+            return;
+        }
 
-            const double extension = distance - naturalGaps[pair];
-            const double normalizedExtension = extension / naturalGaps[pair];
-            const double springForce = extension * springStiffness *
-                (1.0 + 4.0 * normalizedExtension * normalizedExtension);
-            const QPointF restoringForce = delta / distance * springForce;
-            forces[left] += restoringForce;
-            forces[right] -= restoringForce;
+        const double extension = distance - naturalLength;
+        const double normalizedExtension = extension / naturalLength;
+        const double springForce = extension * springStiffness *
+            (1.0 + 4.0 * normalizedExtension * normalizedExtension);
+        const QPointF restoringForce = delta / distance * springForce;
+        forces[first] += restoringForce;
+        forces[second] -= restoringForce;
+    };
+    for (int side = 0; side < 4; ++side) {
+        const int base = side * kDotsPerSide;
+        // Middle dots: 4, 5, 6; inner dots: 7, 8.
+        for (int i = 0; i < 3; ++i) {
+            applySpring(base + i, base + 4 + i);
+            applySpring(base + i + 1, base + 4 + i);
+        }
+        for (int i = 0; i < 2; ++i) {
+            applySpring(base + 4 + i, base + 7 + i);
+            applySpring(base + 4 + i + 1, base + 7 + i);
         }
     }
 
@@ -147,34 +158,41 @@ void OverlayWidget::paintEvent(QPaintEvent *event) {
     const double radii[] = { 16.0, 10.0, 6.0 };
     const double motionInfluence[] = { 0.68, 1.0, 1.38 };
 
-    std::array<QPointF, 48> targets;
-    for (int anchorIndex = 0; anchorIndex < 4; ++anchorIndex) {
-        const double anchor = anchors[anchorIndex];
-        for (int side = 0; side < 4; ++side) {
-            const int group = anchorIndex * 4 + side;
-            for (int i = 0; i < 3; ++i) {
-                const double offset = offsets[i];
-                const double influence = motionInfluence[i];
-                const double xShift = shiftX * influence;
-                const double yShift = shiftY * influence;
-                switch (side) {
-                case 0: // Left edge, outer to inner.
-                    targets[group * 3 + i] = QPointF(margin + offset + xShift, h * anchor + yShift);
-                    break;
-                case 1: // Right edge, outer to inner.
-                    targets[group * 3 + i] = QPointF(w - margin - offset + xShift, h * anchor + yShift);
-                    break;
-                case 2: // Top edge, outer to inner.
-                    targets[group * 3 + i] = QPointF(w * anchor + xShift, margin + offset + yShift);
-                    break;
-                default: // Bottom edge, outer to inner.
-                    targets[group * 3 + i] = QPointF(w * anchor + xShift, h - margin - offset + yShift);
-                    break;
+    std::array<QPointF, kDotCount> targets;
+    std::array<QPointF, kDotCount> restTargets;
+    const auto edgePoint = [&](int side, double anchor, double offset,
+                               double xShift, double yShift) {
+        switch (side) {
+        case 0: return QPointF(margin + offset + xShift, h * anchor + yShift);
+        case 1: return QPointF(w - margin - offset + xShift, h * anchor + yShift);
+        case 2: return QPointF(w * anchor + xShift, margin + offset + yShift);
+        default: return QPointF(w * anchor + xShift, h - margin - offset + yShift);
+        }
+    };
+    for (int side = 0; side < 4; ++side) {
+        const int base = side * kDotsPerSide;
+        for (int layer = 0; layer < 3; ++layer) {
+            const int count = 4 - layer;
+            std::array<double, 4> layerAnchors = { anchors[0], anchors[1], anchors[2], anchors[3] };
+            int layerAnchorCount = 4;
+            for (int midpoint = 0; midpoint < layer; ++midpoint) {
+                for (int i = 0; i < layerAnchorCount - 1; ++i) {
+                    layerAnchors[i] = (layerAnchors[i] + layerAnchors[i + 1]) / 2.0;
                 }
+                --layerAnchorCount;
+            }
+            for (int i = 0; i < count; ++i) {
+                // Each layer's anchors are the midpoints of the layer before it.
+                const double anchor = layerAnchors[i];
+                const int index = base + (layer == 0 ? i : layer == 1 ? 4 + i : 7 + i);
+                restTargets[index] = edgePoint(side, anchor, offsets[layer], 0.0, 0.0);
+                targets[index] = edgePoint(side, anchor, offsets[layer],
+                                           shiftX * motionInfluence[layer],
+                                           shiftY * motionInfluence[layer]);
             }
         }
     }
-    updateDotPhysics(targets);
+    updateDotPhysics(targets, restTargets);
 
     const auto drawContrastDot = [&p](const QPointF &center, double radius) {
         // The white ring remains visible on dark content while the black middle
@@ -187,9 +205,11 @@ void OverlayWidget::paintEvent(QPaintEvent *event) {
         p.drawEllipse(center, radius * 0.27, radius * 0.27);
     };
 
-    for (int group = 0; group < 16; ++group) {
-        for (int i = 0; i < 3; ++i) {
-            drawContrastDot(dots_[group * 3 + i].position, radii[i]);
+    for (int side = 0; side < 4; ++side) {
+        const int base = side * kDotsPerSide;
+        for (int i = 0; i < kDotsPerSide; ++i) {
+            const int layer = i < 4 ? 0 : i < 7 ? 1 : 2;
+            drawContrastDot(dots_[base + i].position, radii[layer]);
         }
     }
 

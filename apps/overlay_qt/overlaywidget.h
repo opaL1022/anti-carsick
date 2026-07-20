@@ -20,6 +20,9 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
+    static constexpr int kDotsPerSide = 9;
+    static constexpr int kDotCount = kDotsPerSide * 4;
+
     struct DotState {
         QPointF position;
         QPointF velocity;
@@ -27,7 +30,8 @@ private:
         bool initialized = false;
     };
 
-    void updateDotPhysics(const std::array<QPointF, 48> &targets);
+    void updateDotPhysics(const std::array<QPointF, kDotCount> &targets,
+                          const std::array<QPointF, kDotCount> &restTargets);
 
     double ax_ = 0.0;
     double ay_ = 0.0;
@@ -39,7 +43,7 @@ private:
     QString statusMessage_ = QStringLiteral("Starting…");
     QElapsedTimer lastPacket_;
     QElapsedTimer animationClock_;
-    std::array<DotState, 48> dots_;
+    std::array<DotState, kDotCount> dots_;
     int physicsWidth_ = 0;
     int physicsHeight_ = 0;
 };
