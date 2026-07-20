@@ -4,6 +4,8 @@
 <dict>
 	<key>NSMotionUsageDescription</key>
 	<string>Anti Carsick uses motion data to display movement cues on your computer.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Anti Carsick sends motion data to the overlay on your local network.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
