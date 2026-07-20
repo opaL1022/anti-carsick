@@ -1,16 +1,29 @@
 #include <QAction>
 #include <QApplication>
+#include <QByteArray>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QMenu>
 #include <QMessageBox>
 #include <QStyle>
 #include <QSystemTrayIcon>
-
 #include "overlaywidget.h"
 #include "udpreceiver.h"
 
 int main(int argc, char *argv[]) {
+#if defined(Q_OS_LINUX)
+    // Regular Wayland windows cannot request a compositor overlay layer, so a
+    // native Wayland client may be placed below the app it should cover. When
+    // XWayland is available, use Qt's XCB backend to retain the always-on-top
+    // and input-transparent window behavior.
+    const QByteArray platform = qgetenv("QT_QPA_PLATFORM");
+    if ((platform.isEmpty() || platform.startsWith("wayland")) &&
+        !qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY") &&
+        !qEnvironmentVariableIsEmpty("DISPLAY")) {
+        qputenv("QT_QPA_PLATFORM", "xcb");
+    }
+#endif
+
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Anti Carsick Overlay"));
     QApplication::setApplicationVersion(QStringLiteral("1.0.0"));
